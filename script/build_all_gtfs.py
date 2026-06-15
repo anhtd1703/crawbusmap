@@ -294,7 +294,7 @@ def main():
             for st in stations:
                 stop_id_raw = st.get("stationId")
                 if stop_id_raw:
-                    stop_id = f"{stop_id_raw}_{region_code}"
+                    stop_id = str(stop_id_raw)
                     if stop_id not in stops_map:
                         n_raw = st.get("stationName")
                         d_raw = st.get("stationAddress")
@@ -344,7 +344,7 @@ def main():
             for st_idx, st in enumerate(stations):
                 stop_id_raw = st.get('stationId')
                 if not stop_id_raw: continue
-                stop_id = f"{stop_id_raw}_{region_code}"
+                stop_id = str(stop_id_raw)
                 slat, slon = float(st.get("lat", 0)), float(st.get("lng", 0))
                 
                 best_dist, best_accum, best_seg_idx = float('inf'), 0.0, start_idx
@@ -370,9 +370,6 @@ def main():
                 last_dist = best_accum
                 start_idx = best_seg_idx
                 
-            if stop_offsets and shape_points:
-                if shape_points[-1]["dist"] < stop_offsets[-1]["dist"]:
-                    shape_points[-1]["dist"] = stop_offsets[-1]["dist"]       
             if stop_offsets and shape_points:
                 if shape_points[-1]["dist"] < stop_offsets[-1]["dist"]:
                     shape_points[-1]["dist"] = stop_offsets[-1]["dist"]
