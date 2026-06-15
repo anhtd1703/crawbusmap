@@ -1,0 +1,14 @@
+# Ignore output files and raw data generated from crawls
+output/
+data/
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Scratch scripts or temporary files
+scratch/
+.idea/
+.vscode/
+*.log
