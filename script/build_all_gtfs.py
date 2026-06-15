@@ -253,8 +253,11 @@ def main():
         is_metro = "metro" in str(route_no_raw).lower() or "metro" in str(route_long_name).lower()
         route_type = 1 if is_metro else 3
         
-        color = str(detail.get("color", "0088CC")).strip('#')
-        text_color = str(detail.get("textColor", "FFFFFF")).strip('#')
+        c_val = detail.get("color")
+        color = str(c_val).strip('#') if (c_val is not None and str(c_val).strip().lower() not in ("none", "null", "")) else ""
+        
+        tc_val = detail.get("textColor")
+        text_color = str(tc_val).strip('#') if (tc_val is not None and str(tc_val).strip().lower() not in ("none", "null", "")) else ""
         
         route_writer.writerow({
             "route_id": route_id,
