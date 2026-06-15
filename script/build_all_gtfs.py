@@ -52,11 +52,23 @@ def seconds_to_hhmmss(seconds):
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+def remove_accents(input_str):
+    import unicodedata
+    if not input_str:
+        return ""
+    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    only_ascii = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+    only_ascii = only_ascii.replace('Đ', 'D').replace('đ', 'd')
+    return only_ascii
+
 def get_short_id(name, existing_ids):
     if not name:
         base = "U"
     else:
-        words = name.replace("-", " ").split()
+        clean_name = remove_accents(name)
+        import re
+        clean_name = re.sub(r'[^a-zA-Z0-9\s-]', '', clean_name)
+        words = clean_name.replace("-", " ").split()
         base = "".join([w[0].upper() for w in words if w])[:4]
         if not base:
             base = "C"
@@ -234,8 +246,8 @@ def main():
         # -- 2. Ghi Route --
         route_id_raw = detail.get("routeId")
         route_id = f"{route_id_raw}_{region_code}"
-        route_no_raw = detail.get("routeNo", "")
-        route_short_name = f"{route_no_raw}_{region_code}"
+        route_no_raw = str(detail.get("routeNo", "")).strip()
+        route_short_name = route_no_raw
         route_long_name = detail.get("routeName", "")
         
         is_metro = "metro" in str(route_no_raw).lower() or "metro" in str(route_long_name).lower()
@@ -259,21 +271,6 @@ def main():
         for st in detail.get("stations", []):
             d = st.get("stationDirection", 0)
             if d in directions: directions[d].append(st)
-            
-            # Lưu stop nếu chưa có
-            stop_id_raw = st.get("stationId")
-            if stop_id_raw:
-                stop_id = str(stop_id_raw)
-                if stop_id not in stops_map:
-                    n_raw = st.get("stationName")
-                    d_raw = st.get("stationAddress")
-                    stops_map[stop_id] = {
-                        "stop_id": stop_id,
-                        "stop_name": n_raw.strip() if n_raw else "",
-                        "stop_desc": d_raw.strip() if d_raw else "",
-                        "stop_lat": st.get("lat", 0.0),
-                        "stop_lon": st.get("lng", 0.0)
-                    }
 
         def parse_tt(tt_str):
             if not tt_str: return []
@@ -286,8 +283,32 @@ def main():
         # -- 4. Build Shapes & StopTimes --
         for d, stations in directions.items():
             if not stations: continue
+            
+            timetables = tt_out if d == 0 else tt_in
+            if not timetables: continue # SKIP if no timetables for this direction to avoid unused_shape & stop_without_stop_time
+            
             stations.sort(key=lambda x: x.get("stationOrder", 0))
             shape_id = f"shape_{route_id}_{d}"
+            
+            # Now add stops for this active direction to stops_map
+            for st in stations:
+                stop_id_raw = st.get("stationId")
+                if stop_id_raw:
+                    stop_id = f"{stop_id_raw}_{region_code}"
+                    if stop_id not in stops_map:
+                        n_raw = st.get("stationName")
+                        d_raw = st.get("stationAddress")
+                        stop_name = n_raw.strip() if n_raw else ""
+                        stop_desc = d_raw.strip() if d_raw else ""
+                        if stop_desc == stop_name:
+                            stop_desc = ""
+                        stops_map[stop_id] = {
+                            "stop_id": stop_id,
+                            "stop_name": stop_name,
+                            "stop_desc": stop_desc,
+                            "stop_lat": float(st.get("lat", 0.0)),
+                            "stop_lon": float(st.get("lng", 0.0))
+                        }
             
             raw_points = []
             for st in stations:
@@ -311,7 +332,7 @@ def main():
                         accum_dist += dist
                         shape_points.append({"lat": lat, "lon": lon, "dist": accum_dist})
                         
-            # Cứu cánh nếu không có pathPoints
+            # Cứu cảnh nếu không có pathPoints
             if not shape_points:
                 for st in stations:
                     shape_points.append({"lat": float(st.get("lat",0)), "lon": float(st.get("lng",0)), "dist": 0.0})
@@ -321,10 +342,13 @@ def main():
             start_idx = 0
             
             for st_idx, st in enumerate(stations):
-                stop_id = str(st.get('stationId'))
+                stop_id_raw = st.get('stationId')
+                if not stop_id_raw: continue
+                stop_id = f"{stop_id_raw}_{region_code}"
                 slat, slon = float(st.get("lat", 0)), float(st.get("lng", 0))
                 
                 best_dist, best_accum, best_seg_idx = float('inf'), 0.0, start_idx
+                best_proj_x, best_proj_y = slon, slat
                 for i in range(start_idx, len(shape_points) - 1):
                     pA, pB = shape_points[i], shape_points[i+1]
                     dist, px, py, dist_from_a = distance_point_to_segment(slon, slat, pA["lon"], pA["lat"], pB["lon"], pB["lat"])
@@ -332,14 +356,23 @@ def main():
                         best_dist = dist
                         best_accum = pA["dist"] + dist_from_a
                         best_seg_idx = i
+                        best_proj_x, best_proj_y = px, py
                 
                 if len(shape_points) == 1: best_accum = 0.0
                 if best_accum <= last_dist: best_accum = last_dist + 0.1
+                
+                # Snap the stop coordinates to the shape to prevent stop_too_far_from_shape warning if within 100 meters
+                if best_dist < 100.0 and stop_id in stops_map:
+                    stops_map[stop_id]["stop_lat"] = round(best_proj_y, 6)
+                    stops_map[stop_id]["stop_lon"] = round(best_proj_x, 6)
                 
                 stop_offsets.append({"stop_id": stop_id, "sequence": st_idx + 1, "dist": best_accum})
                 last_dist = best_accum
                 start_idx = best_seg_idx
                 
+            if stop_offsets and shape_points:
+                if shape_points[-1]["dist"] < stop_offsets[-1]["dist"]:
+                    shape_points[-1]["dist"] = stop_offsets[-1]["dist"]       
             if stop_offsets and shape_points:
                 if shape_points[-1]["dist"] < stop_offsets[-1]["dist"]:
                     shape_points[-1]["dist"] = stop_offsets[-1]["dist"]
@@ -404,7 +437,7 @@ def main():
     feed_info_path = gtfs_dir / "feed_info.txt"
     print("Ghi feed_info.txt...")
     with open(feed_info_path, 'w', newline='', encoding='utf-8') as f:
-        fw = csv.DictWriter(f, fieldnames=["feed_publisher_name", "feed_publisher_url", "feed_lang", "feed_start_date", "feed_end_date", "feed_version"])
+        fw = csv.DictWriter(f, fieldnames=["feed_publisher_name", "feed_publisher_url", "feed_lang", "feed_start_date", "feed_end_date", "feed_version", "feed_contact_email", "feed_contact_url"])
         fw.writeheader()
         fw.writerow({
             "feed_publisher_name": "BusMap",
@@ -412,7 +445,9 @@ def main():
             "feed_lang": "vi",
             "feed_start_date": "20260101",
             "feed_end_date": "20271231",
-            "feed_version": "1.0"
+            "feed_version": "1.0",
+            "feed_contact_email": "support@busmap.vn",
+            "feed_contact_url": "https://busmap.vn"
         })
 
     print(f"\nHOÀN THÀNH TÍCH HỢP CHO REGION: {region_code}")
