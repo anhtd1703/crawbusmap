@@ -236,95 +236,40 @@ def main():
                             pt_lng = float(coords[0])
                             pt_lat = float(coords[1])
                             
-                            # Tính khoảng cách từ điểm shape trước tới điểm shape này
-                            if len(shapes) > 0 and shapes[-1]["shape_id"] == shape_id:
-                                prev_lat = shapes[-1]["shape_pt_lat"]
-                                prev_lng = shapes[-1]["shape_pt_lon"]
-                                dist = haversine(prev_lat, prev_lng, pt_lat, pt_lng)
-                                if dist > 0:
-                                    accumulated_dist += dist
-                                    shapes.append({
-                                        "shape_id": shape_id,
-                                        "shape_pt_lat": pt_lat,
-                                        "shape_pt_lon": pt_lng,
-                                        "shape_pt_sequence": shape_pt_seq,
-                                        "shape_dist_traveled": round(accumulated_dist, 2)
-                                    })
-                                    shape_pt_seq += 1
-                            else:
-                                shapes.append({
-                                    "shape_id": shape_id,
-                                    "shape_pt_lat": pt_lat,
-                                    "shape_pt_lon": pt_lng,
-                                    "shape_pt_sequence": shape_pt_seq,
-                                    "shape_dist_traveled": round(accumulated_dist, 2)
-                                })
-                                shape_pt_seq += 1
+                            # Thêm điểm trực tiếp vào shapes
+                            shapes.append({
+                                "shape_id": shape_id,
+                                "shape_pt_lat": pt_lat,
+                                "shape_pt_lon": pt_lng,
+                                "shape_pt_sequence": shape_pt_seq
+                            })
+                            shape_pt_seq += 1
                                 
-                # Đảm bảo khoảng cách trạm luôn tăng (tránh lỗi Decreasing or equal shape_dist_traveled)
-                current_dist = round(accumulated_dist, 2)
-                fallback_used = False
-                if len(stop_offsets) > 0:
-                    prev_dist = stop_offsets[-1]["dist"]
-                    if current_dist <= prev_dist:
-                        prev_st = dir_stations[i-1]
-                        prev_lat = float(prev_st.get("lat", 0))
-                        prev_lng = float(prev_st.get("lng", 0))
-                        direct_dist = haversine(prev_lat, prev_lng, lat, lng)
-                        
-                        if direct_dist < 0.01:
-                            direct_dist = 0.01
-                            
-                        accumulated_dist += direct_dist
-                        current_dist = round(accumulated_dist, 2)
-                        fallback_used = True
-
-                # Cập nhật điểm cuối của shape cho khớp với trạm nếu có gap
-                if len(shapes) > 0 and shapes[-1]["shape_id"] == shape_id:
-                    last_shape_lat = shapes[-1]["shape_pt_lat"]
-                    last_shape_lon = shapes[-1]["shape_pt_lon"]
-                    dist_to_stop = haversine(last_shape_lat, last_shape_lon, lat, lng)
-                    
-                    if fallback_used:
-                        # Fallback đã cộng khoảng cách vào accumulated_dist, ta chỉ việc thêm điểm
-                        shapes.append({
-                            "shape_id": shape_id,
-                            "shape_pt_lat": lat,
-                            "shape_pt_lon": lng,
-                            "shape_pt_sequence": shape_pt_seq,
-                            "shape_dist_traveled": current_dist
-                        })
-                        shape_pt_seq += 1
-                    elif dist_to_stop > 10.0:
-                        # Nếu shape point cuối cách trạm > 10m, nối shape tới trạm để tránh lỗi geoDistanceToShape
-                        accumulated_dist += dist_to_stop
-                        current_dist = round(accumulated_dist, 2)
-                        shapes.append({
-                            "shape_id": shape_id,
-                            "shape_pt_lat": lat,
-                            "shape_pt_lon": lng,
-                            "shape_pt_sequence": shape_pt_seq,
-                            "shape_dist_traveled": current_dist
-                        })
-                        shape_pt_seq += 1
-                elif len(shapes) == 0:
-                    # Trạm đầu tiên hoặc tuyến chưa có shape
+                if len(shapes) == 0 or (shapes[-1]["shape_id"] == shape_id and haversine(shapes[-1]["shape_pt_lat"], shapes[-1]["shape_pt_lon"], lat, lng) > 10.0):
                     shapes.append({
                         "shape_id": shape_id,
                         "shape_pt_lat": lat,
                         "shape_pt_lon": lng,
-                        "shape_pt_sequence": shape_pt_seq,
-                        "shape_dist_traveled": current_dist
+                        "shape_pt_sequence": shape_pt_seq
                     })
                     shape_pt_seq += 1
 
-                # Lưu offset thời gian di chuyển (giây) cho trạm hiện tại
-                offset_seconds = int(accumulated_dist / SPEED_MS)
+                # Tính toán lại khoảng cách tổng cộng để ước lượng offset
+                if i == 0:
+                    offset_seconds = 0
+                    accumulated_dist = 0.0
+                else:
+                    prev_st = dir_stations[i-1]
+                    prev_lat = float(prev_st.get("lat", 0))
+                    prev_lng = float(prev_st.get("lng", 0))
+                    dist_step = haversine(prev_lat, prev_lng, lat, lng)
+                    accumulated_dist += dist_step
+                    offset_seconds = int(accumulated_dist / SPEED_MS)
+
                 stop_offsets.append({
                     "stop_id": stop_id,
                     "sequence": i + 1,
-                    "offset": offset_seconds,
-                    "dist": current_dist
+                    "offset": offset_seconds
                 })
 
             # Sinh trips và stop_times từ timetable
@@ -347,8 +292,7 @@ def main():
                         "arrival_time": arr_dep_time,
                         "departure_time": arr_dep_time,
                         "stop_id": so["stop_id"],
-                        "stop_sequence": so["sequence"],
-                        "shape_dist_traveled": so["dist"]
+                        "stop_sequence": so["sequence"]
                     })
 
     # --- GHI DỮ LIỆU RA CÁC TỆP GTFS ---
@@ -375,7 +319,7 @@ def main():
 
     # 4. shapes.txt
     with open(GTFS_DIR / "shapes.txt", 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence", "shape_dist_traveled"])
+        writer = csv.DictWriter(f, fieldnames=["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"])
         writer.writeheader()
         writer.writerows(shapes)
 
@@ -387,7 +331,7 @@ def main():
 
     # 6. stop_times.txt
     with open(GTFS_DIR / "stop_times.txt", 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence", "shape_dist_traveled"])
+        writer = csv.DictWriter(f, fieldnames=["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"])
         writer.writeheader()
         writer.writerows(stop_times)
 

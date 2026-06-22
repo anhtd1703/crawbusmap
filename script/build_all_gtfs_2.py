@@ -5,6 +5,7 @@ import csv
 import time
 import math
 import argparse
+import requests
 from pathlib import Path
 
 # Thêm thư mục hiện tại vào path để import fetch_hanoi_routes
@@ -114,15 +115,100 @@ def prepare_gtfs_file(file_path, fieldnames, region_code):
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     return f, writer
 
+def decode_polyline6(encoded):
+    """Giải mã chuỗi polyline6 của Valhalla thành danh sách tọa độ (lat, lon)."""
+    try:
+        import polyline
+        return polyline.decode(encoded, precision=6)
+    except Exception:
+        coords = []
+        index = 0
+        lat = 0
+        lon = 0
+        length = len(encoded)
+        while index < length:
+            # Latitude
+            shift = 0
+            result = 0
+            while True:
+                b = ord(encoded[index]) - 63
+                index += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            dlat = ~(result >> 1) if (result & 1) else (result >> 1)
+            lat += dlat
+
+            # Longitude
+            shift = 0
+            result = 0
+            while True:
+                b = ord(encoded[index]) - 63
+                index += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            dlon = ~(result >> 1) if (result & 1) else (result >> 1)
+            lon += dlon
+
+            coords.append((lat / 1e6, lon / 1e6))
+        return coords
+
+def map_match_valhalla(shape_points, valhalla_url, costing="auto"):
+    """
+    Sử dụng Valhalla meili map matching để khớp danh sách tọa độ GPS lên lưới đường của OSM.
+    """
+    if not shape_points or len(shape_points) < 2:
+        return shape_points
+
+    # Định dạng shape cho Valhalla là mảng các dict {"lat": ..., "lon": ...}
+    payload = {
+        "shape": shape_points,
+        "costing": costing,
+        "shape_match": "map_snap",
+        "search_radius": 50,
+        "gps_accuracy": 30
+    }
+    
+    try:
+        response = requests.post(valhalla_url, json=payload, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            legs = data.get("trip", {}).get("legs", [])
+            matched_coords = []
+            for leg in legs:
+                shape_str = leg.get("shape")
+                if shape_str:
+                    decoded = decode_polyline6(shape_str)
+                    for lat, lon in decoded:
+                        # Loại bỏ các điểm trùng lặp liên tiếp
+                        if not matched_coords or matched_coords[-1] != {"lat": lat, "lon": lon}:
+                            matched_coords.append({"lat": lat, "lon": lon})
+            if matched_coords:
+                print(f"  [Valhalla] Khớp đường thành công: {len(shape_points)} điểm gốc -> {len(matched_coords)} điểm khớp.")
+                return matched_coords
+            else:
+                print("  [CẢNH BÁO] Valhalla trả về kết quả trống. Sử dụng tọa độ gốc.")
+        else:
+            print(f"  [CẢNH BÁO] Valhalla báo lỗi {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"  [CẢNH BÁO] Lỗi kết nối đến Valhalla ({valhalla_url}): {e}")
+        
+    return shape_points
+
 def main():
-    parser = argparse.ArgumentParser(description="Tự động crawl và build GTFS cho một khu vực (hn, dn, sg...).")
+    parser = argparse.ArgumentParser(description="Tự động crawl và build GTFS (có Valhalla map matching) cho một khu vực (hn, dn, sg...).")
     parser.add_argument("--region", type=str, required=True, help="Mã khu vực (vd: hn, sg, dn)")
+    parser.add_argument("--valhalla-url", type=str, default="http://localhost:8002/trace_route", help="URL của Valhalla trace_route API")
+    parser.add_argument("--valhalla-costing", type=str, default="auto", help="Valhalla costing model (e.g. auto, bus)")
     args = parser.parse_args()
     
     region_code = args.region.lower()
     
     base_dir = Path(__file__).parents[1]
-    gtfs_dir = base_dir / "output" / "gtfs"
+    gtfs_dir = base_dir / "output" / "gtfs2"
     gtfs_dir.mkdir(parents=True, exist_ok=True)
     
     print("1. Lấy khóa giải mã API...")
@@ -333,6 +419,9 @@ def main():
                 for st in stations:
                     shape_points.append({"lat": float(st.get("lat",0)), "lon": float(st.get("lng",0))})
                     
+            # Thực hiện Map Matching qua Valhalla
+            shape_points = map_match_valhalla(shape_points, args.valhalla_url, args.valhalla_costing)
+                    
             stop_offsets = []
             current_time_offset = 0.0
             last_valid_lat, last_valid_lon = None, None
@@ -428,6 +517,7 @@ def main():
         })
 
     print(f"\nHOÀN THÀNH TÍCH HỢP CHO REGION: {region_code}")
+    print(f"Các tệp GTFS được lưu tại: {gtfs_dir}")
 
 if __name__ == "__main__":
     main()
